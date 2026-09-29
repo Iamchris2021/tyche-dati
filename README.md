@@ -35,6 +35,11 @@ Su OpenStreetMap Panda **non esiste**; su Overture sì, con il telefono.
   banda illimitate.
 - **Senza perdite**: nome, telefono intero, via e città si ricompongono identici
   (le città sono scritte una volta per file).
+- **Telefoni che si possono chiamare da ovunque**: in Overture solo metà dei numeri
+  italiani aveva il «+39»; un quarto era «39095…» senza «+» (il telefono avrebbe
+  composto un numero sbagliato) e un quarto locale. `prepara.py` li porta tutti nella
+  forma internazionale (+39…) col paese del posto: 99% dei numeri. Il resto (1%,
+  numeri troncati o spazzatura) resta com'era: niente si indovina.
 - **Quanto pesa per l'utente** (misurato sull'Italia): la prima ricerca in una zona
   scarica in mediana ~37 KB compressi; ripeterla scarica **0 KB** (i file restano nel
   telefono, cifrati, fino a 200). Il raggio parte da 300 m e si allarga solo se serve.

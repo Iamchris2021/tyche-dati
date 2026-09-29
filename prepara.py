@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import argparse, json, math, os, re, shutil, sys, time, urllib.request
 from collections import defaultdict
+from functools import lru_cache
+
+import phonenumbers
 
 QUI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, QUI)
@@ -75,13 +78,50 @@ def regione_di_zona(i: int, j: int) -> str | None:
     return None
 
 
-def telefono(t):
+@lru_cache(maxsize=1_000_000)
+def telefono(t, nazione):
+    """Il numero nella forma internazionale completa (+39095201101), quella che il
+    telefono compone giusta da qualunque paese. In Overture (Italia, set 2026) solo
+    metà dei numeri l'aveva: un quarto era «39095201101» — senza «+», toccato dal
+    telefono compone un numero locale sbagliato — e un quarto locale («095…»,
+    «333…»), che non funziona da una SIM estera. Si legge col paese del posto; se
+    così non è un numero valido si riprova col «+» davanti («39…» era già il
+    prefisso) — ma solo se porta nello stesso paese. Senza paese non si indovina
+    (con un «+» davanti «095537435» sarebbe del Myanmar). Se nessuna lettura è
+    valida resta com'era: meglio un numero da controllare che nessun numero."""
     t = (t or "").strip()
-    return ("+" if t.startswith("+") else "") + re.sub(r"\D", "", t) if t else ""
+    if not t:
+        return ""
+    cifre = re.sub(r"\D", "", t)
+    prove = [(t, nazione)] if (nazione or t.startswith("+")) else []
+    if nazione and not t.startswith("+"):
+        # se comincia col prefisso del paese, quella è la lettura da provare PRIMA:
+        # «3905020002» di un posto di Pisa è valido anche come cellulare 390…, ma è
+        # il fisso +39 050 20002 (misurato su un campione: tutti fissi, Pisa, Milano,
+        # Torino, Pescara…)
+        piu = ("+" + cifre, None)
+        prefisso = str(phonenumbers.country_code_for_region(nazione) or "")
+        prove.insert(0 if prefisso and cifre.startswith(prefisso) else 1, piu)
+        if nazione == "IT" and cifre.startswith("39"):
+            # l'Italia è l'unico paese che TIENE lo 0 del prefisso di zona anche col +39:
+            # molti numeri arrivano «39 583 981165» invece di +39 0583 981165. Ultimo
+            # tentativo, e solo qui (su un campione: 30 su 30 col prefisso della città
+            # giusta — Capannori 0583, Jesolo 0421, Gela 0933, Lipari 090…)
+            prove.append(("+390" + cifre[2:], None))
+    for prova, paese in prove:
+        try:
+            n = phonenumbers.parse(prova, paese)
+        except phonenumbers.NumberParseException:
+            continue
+        # il «+» aggiunto vale solo se porta nello STESSO paese del posto: «17865491032»
+        # di un posto italiano non diventa un numero di Miami
+        if phonenumbers.is_valid_number(n) and (paese or t.startswith("+") or phonenumbers.region_code_for_number(n) == nazione):
+            return phonenumbers.format_number(n, phonenumbers.PhoneNumberFormat.E164)
+    return ("+" if t.startswith("+") else "") + cifre
 
 
 def leggi(con, regione: dict, release: str, da_file: str | None):
-    """Righe (gruppo, i, j, nome, lat, lng, tel, via, paese, tag), ordinate: lo
+    """Righe (gruppo, i, j, nome, lat, lng, tel, via, paese, nazione, tag), ordinate: lo
     stesso posto con più tag della stessa famiglia arriva in righe vicine."""
     tutti_i_tag = {t for v in list(TAX_A_OSM.values()) + list(BASIC_A_OSM.values()) for t in v} | {R}
     con.execute("CREATE OR REPLACE TABLE mappa(tax VARCHAR, tag VARCHAR)")
@@ -92,17 +132,17 @@ def leggi(con, regione: dict, release: str, da_file: str | None):
     con.executemany("INSERT INTO gruppi VALUES (?, ?)", [(t, gruppo_di(t)) for t in tutti_i_tag])
     o, s, e, n = regione["o"], regione["s"], regione["e"], regione["n"]
     if da_file:
-        sorgente = f"(SELECT nome, tax, bc, conf, stato, tel, via, paese, lat, lng FROM read_parquet('{da_file}'))"
+        sorgente = f"(SELECT nome, tax, bc, conf, stato, tel, via, paese, NULL::VARCHAR AS nazione, lat, lng FROM read_parquet('{da_file}'))"
     else:
         sorgente = f"""(SELECT names.primary AS nome, taxonomy.primary AS tax, basic_category AS bc, confidence AS conf,
                   operating_status AS stato, phones[1] AS tel, addresses[1].freeform AS via, addresses[1].locality AS paese,
-                  ST_Y(geometry) AS lat, ST_X(geometry) AS lng
+                  addresses[1].country AS nazione, ST_Y(geometry) AS lat, ST_X(geometry) AS lng
            FROM read_parquet('s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*', hive_partitioning=1)
            WHERE bbox.xmin BETWEEN {o} AND {e} AND bbox.ymin BETWEEN {s} AND {n})"""
     con.execute(f"""
         CREATE OR REPLACE TEMP VIEW posti AS
         SELECT g.gruppo, floor(p.lat / {GRIGLIA})::INT AS i, floor(p.lng / {GRIGLIA})::INT AS j,
-               trim(p.nome) AS nome, p.lat, p.lng, p.tel, p.via, p.paese, t.tag
+               trim(p.nome) AS nome, p.lat, p.lng, p.tel, p.via, p.paese, p.nazione, t.tag
         FROM {sorgente} p
         CROSS JOIN LATERAL (
             SELECT m.tag FROM mappa m WHERE m.tax = p.tax
@@ -161,7 +201,9 @@ def scrivi_zona(cartella, nome, posti, release, profondita, foglie):
                 ci[paese] = len(citta)
                 citta.append(paese)
             c = ci[paese]
-        righe.append([nome_p[:80], round(lat * 1e5) - o5[0], round(lng * 1e5) - o5[1], telefono(tel), via[:80], c, sorted(ti[t] for t in tags)])
+        # 300: solo contro la spazzatura (testi con link e numeri dentro); i nomi veri lunghi
+        # («Noleggio BICICLETTE … Aeroporto di Lampedusa») restano interi
+        righe.append([nome_p[:300], round(lat * 1e5) - o5[0], round(lng * 1e5) - o5[1], tel, via[:300], c, sorted(ti[t] for t in tags)])
     with open(os.path.join(cartella, f"{nome}.json"), "w") as f:
         json.dump({"v": 3, "r": release, "o": o5, "t": tag, "c": citta, "p": righe}, f, ensure_ascii=False, separators=(",", ":"))
     foglie.append(nome)
@@ -178,6 +220,7 @@ def main():
     ap.add_argument("--regione", required=True, choices=[r["id"] for r in REG["regioni"]])
     ap.add_argument("--release")
     ap.add_argument("--da-file")
+    ap.add_argument("--nazione", help="paese (IT, FR…) per i numeri dei posti senza paese: serve solo con --da-file")
     ap.add_argument("--out", default=os.path.join(QUI, "out"))
     a = ap.parse_args()
     reg = next(r for r in REG["regioni"] if r["id"] == a.regione)
@@ -214,7 +257,7 @@ def main():
         blocco = cur.fetchmany(50_000)
         if not blocco:
             break
-        for g, i, j, nome, lat, lng, tel, via, paese, tag in blocco:
+        for g, i, j, nome, lat, lng, tel, via, paese, nazione, tag in blocco:
             if regione_di_zona(i, j) != a.regione:
                 continue  # il centro della zona sta in un'altra regione: la scrive lei
             if (g, (i, j)) != (stato["g"], stato["z"]):
@@ -223,6 +266,7 @@ def main():
             chiave = (nome, round(lat, 5), round(lng, 5))
             p = stato["buf"].get(chiave)
             if p is None:
+                tel = telefono(tel, nazione or a.nazione)
                 p = stato["buf"][chiave] = [nome, lat, lng, tel, via, paese, set()]
                 n_posti += 1
                 if tel:
