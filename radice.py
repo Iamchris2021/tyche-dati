@@ -17,7 +17,7 @@ Uso:  python radice.py --out out [--online https://tyche-dati.pages.dev/v3/mappa
 """
 from __future__ import annotations
 
-import argparse, glob, json, os, sys, urllib.request
+import argparse, glob, json, os, shutil, sys, urllib.request
 
 QUI = os.path.dirname(os.path.abspath(__file__))
 REG = json.load(open(os.path.join(QUI, "regioni.json")))
@@ -60,6 +60,8 @@ def main():
         json.dump(mappa, fh, separators=(",", ":"))
     with open(os.path.join(base, "404.html"), "w") as fh:
         fh.write("not found")
+    # la licenza CDLA Permissive 2.0 (art. 2.1): chi condivide i dati ne mette accanto il testo
+    shutil.copy(os.path.join(QUI, "LICENZA-DATI.txt"), os.path.join(base, "LICENZA-DATI.txt"))
     with open(os.path.join(base, "_headers"), "w") as fh:
         # la mappa cambia una volta al mese: un'ora di cache basta e avanza
         fh.write("/v3/mappa.json\n  Cache-Control: public, max-age=3600\n  Access-Control-Allow-Origin: *\n")

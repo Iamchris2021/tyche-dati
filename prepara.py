@@ -358,6 +358,8 @@ def main():
             n_file += len(foglie) + 1
         with open(os.path.join(base, "404.html"), "w") as fh:
             fh.write("not found")
+        # la licenza CDLA Permissive 2.0 (art. 2.1): chi condivide i dati ne mette accanto il testo
+        shutil.copy(os.path.join(QUI, "LICENZA-DATI.txt"), os.path.join(base, "LICENZA-DATI.txt"))
         with open(os.path.join(base, "_headers"), "w") as fh:
             # il percorso ha l'edizione dentro: lo stesso indirizzo non cambia mai → il telefono lo tiene
             fh.write("/v3/*\n  Cache-Control: public, max-age=31536000, immutable\n  Access-Control-Allow-Origin: *\n")

@@ -19,7 +19,8 @@ Su OpenStreetMap Panda **non esiste**; su Overture sì, con il telefono.
 | `prepara.py` | per UNA regione: legge da S3, tiene i posti sicuri e aperti, scrive zone e scaffali, **controlla** che siano sani |
 | `radice.py` | riunisce le regioni nella mappa `v3/mappa.json`, l'unico file che l'app legge per sapere dove andare |
 | `.github/workflows/mensile.yml` | il 26 di ogni mese: 6 regioni in parallelo, poi la radice, tutto pubblicato su Cloudflare Pages |
-| `requirements.txt` | DuckDB |
+| `requirements.txt` | DuckDB, phonenumbers |
+| `LICENZA-DATI.txt` | la licenza dei dati (CDLA Permissive 2.0, © Overture Maps Foundation): va in ogni sito pubblicato, come chiede l'art. 2.1 |
 
 ## Come è fatto (formato v3)
 
