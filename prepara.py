@@ -156,9 +156,15 @@ def leggi(con, regione: dict, release: str, da_file: str | None):
     return con.execute("SELECT * FROM posti ORDER BY gruppo, i, j, nome, lat, lng")
 
 
+NOME_ZONA = re.compile(r"^(-?\d+)_(-?\d+)((?:-[0-3])*)$")
+
+
 def confini(nome):
-    radice, *quadri = nome.split("-")
-    i, j = map(int, radice.split("_"))
+    """A sud dell'equatore e a ovest di Greenwich i numeri sono negativi
+    («-12_-24-1»): il trattino del segno non è quello dei quadranti."""
+    m = NOME_ZONA.match(nome)
+    i, j = int(m[1]), int(m[2])
+    quadri = [q for q in m[3].split("-") if q]
     s, o, lato = i * GRIGLIA, j * GRIGLIA, GRIGLIA
     for q in map(int, quadri):
         lato /= 2
