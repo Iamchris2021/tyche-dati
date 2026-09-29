@@ -353,8 +353,11 @@ def main():
                 for t in tag_per_foglia.get((os.path.join(appoggio, g), f), []):
                     dove[t].append(k)
             rari = {t: ks for t, ks in dove.items() if len(ks) <= len(foglie) * 0.9}
+            # «b»: il peso di ogni file, nello stesso ordine di «z». Serve ai «Luoghi offline»
+            # dell'app: prima di scaricare una città dice quanti MB sono (owner, 29 set 2026)
+            pesi = [os.path.getsize(os.path.join(cart, f"{f}.json")) for f in foglie]
             with open(os.path.join(cart, "indice.json"), "w") as fh:
-                json.dump({"v": 3, "r": release, "z": foglie, "k": rari}, fh, separators=(",", ":"))
+                json.dump({"v": 3, "r": release, "z": foglie, "k": rari, "b": pesi}, fh, separators=(",", ":"))
             n_file += len(foglie) + 1
         with open(os.path.join(base, "404.html"), "w") as fh:
             fh.write("not found")
