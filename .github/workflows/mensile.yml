@@ -95,4 +95,6 @@ jobs:
           git config user.email "tyche-dati@users.noreply.github.com"
           git add mappa-pubblicata.json
           git commit -m "Luoghi Overture: mappa del $(date -u +%Y-%m-%d)" || echo "niente di nuovo"
+          # se nel frattempo qualcuno ha aggiornato gli script, ci si mette in coda (29 set 2026)
+          git pull --rebase
           git push
