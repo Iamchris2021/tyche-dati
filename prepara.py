@@ -52,6 +52,7 @@ MAX_PER_FILE = 800            # oltre, la zona si divide in quattro
 PROFONDITA_MAX = 10
 FIDUCIA_MIN = 0.40            # sotto, Overture stesso non è sicuro che il posto esista
 FILE_PER_SCAFFALE = 19000     # Cloudflare Pages ne accetta 20.000 per sito
+AMMUCCHIATI_MIN = 8           # posti diversi sullo STESSO punto: da qui si guarda se il punto è vero (vedi leggi)
 # i MINIMI per regione: circa il 40% di quanti posti c'erano nell'edizione 2026-09-23.1 (misurati
 # su tutto il mondo: eu 16,6 M · na 13,8 M · as 10,3 M · sa 4,9 M · af 1,4 M · oc 0,9 M). Sotto,
 # l'edizione è a metà o il formato è cambiato: non si pubblica.
@@ -140,19 +141,49 @@ def leggi(con, regione: dict, release: str, da_file: str | None):
            FROM read_parquet('s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*', hive_partitioning=1)
            WHERE bbox.xmin BETWEEN {o} AND {e} AND bbox.ymin BETWEEN {s} AND {n})"""
     con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE base AS
+        SELECT * FROM {sorgente} p
+        WHERE p.nome IS NOT NULL AND trim(p.nome) <> ''
+          AND p.conf >= {FIDUCIA_MIN} AND coalesce(p.stato, 'open') <> 'permanently_closed'
+    """)
+    # I PUNTI DI RIPIEGO (29 set 2026). Quando Overture sa solo la città o il CAP, mette il
+    # posto nel punto centrale: a Città del Messico, sul centro, ristoranti di Tolcayuca
+    # (Hidalgo); a Catania 135 posti diversi sullo stesso punto; ad Arezzo 216 con
+    # indirizzo «AREZZO 57». Nell'app sarebbero «a 0 m» da chi sta in centro. Un punto
+    # con tanti posti è VERO se quasi tutti hanno la stessa via (un palazzo di uffici,
+    # una galleria: Via Morimondo 26 a Milano, 113 posti); è di ripiego se le vie sono
+    # diverse o sono solo il nome della città. I posti dei punti di ripiego non si
+    # scrivono: accanto c'è OSM, e un posto nel posto sbagliato è peggio di nessuno.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE ripiego AS
+        WITH s AS (
+            SELECT lat, lng, trim(nome) AS nome,
+                   nullif(regexp_replace(lower(coalesce(via, '')), '[^\\p{{L}}]', '', 'g'), '') AS st,
+                   nullif(regexp_replace(lower(coalesce(paese, '')), '[^\\p{{L}}]', '', 'g'), '') AS pa
+            FROM base),
+        per_via AS (
+            SELECT lat, lng, CASE WHEN st IS NULL OR st = pa THEN NULL ELSE st END AS st, count(DISTINCT nome) AS k
+            FROM s GROUP BY ALL),
+        punti AS (
+            SELECT lat, lng, sum(k) AS tot, coalesce(max(k) FILTER (WHERE st IS NOT NULL), 0) AS top
+            FROM per_via GROUP BY lat, lng)
+        SELECT lat, lng, tot FROM punti WHERE tot >= {AMMUCCHIATI_MIN} AND top < tot * 0.5
+    """)
+    con.execute(f"""
         CREATE OR REPLACE TEMP VIEW posti AS
         SELECT g.gruppo, floor(p.lat / {GRIGLIA})::INT AS i, floor(p.lng / {GRIGLIA})::INT AS j,
                trim(p.nome) AS nome, p.lat, p.lng, p.tel, p.via, p.paese, p.nazione, t.tag
-        FROM {sorgente} p
+        FROM base p
         CROSS JOIN LATERAL (
             SELECT m.tag FROM mappa m WHERE m.tax = p.tax
             UNION ALL SELECT '{R}' WHERE p.tax LIKE '%\\_restaurant' ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM mappa m2 WHERE m2.tax = p.tax)
             UNION ALL SELECT b.tag FROM mappa_bc b WHERE p.tax IS NULL AND b.bc = p.bc
         ) t
         JOIN gruppi g ON g.tag = t.tag
-        WHERE p.nome IS NOT NULL AND trim(p.nome) <> ''
-          AND p.conf >= {FIDUCIA_MIN} AND coalesce(p.stato, 'open') <> 'permanently_closed'
+        WHERE NOT EXISTS (SELECT 1 FROM ripiego r WHERE r.lat = p.lat AND r.lng = p.lng)
     """)
+    punti, tolti = con.execute("SELECT count(*), coalesce(sum(tot), 0) FROM ripiego").fetchone()
+    print(f"[{regione['id']}] punti di ripiego: {punti} ({tolti} posti senza la posizione vera, non scritti)")
     return con.execute("SELECT * FROM posti ORDER BY gruppo, i, j, nome, lat, lng")
 
 

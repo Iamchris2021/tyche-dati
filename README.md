@@ -40,6 +40,16 @@ Su OpenStreetMap Panda **non esiste**; su Overture sì, con il telefono.
   composto un numero sbagliato) e un quarto locale. `prepara.py` li porta tutti nella
   forma internazionale (+39…) col paese del posto: 99% dei numeri. Il resto (1%,
   numeri troncati o spazzatura) resta com'era: niente si indovina.
+- **Niente posti nel posto sbagliato**: quando Overture sa solo la città o il CAP,
+  mette il posto nel punto centrale (a Catania 135 posti diversi sullo stesso punto,
+  ad Arezzo 216 con indirizzo «AREZZO 57»): nell'app sarebbero «a 0 m» da chi sta in
+  centro. Un punto con 8 o più posti è VERO se la maggior parte ha la stessa via (un
+  palazzo di uffici, una galleria) e resta; altrimenti i suoi posti non si scrivono.
+  Italia: 0,4% dei posti.
+- **Limiti di Cloudflare gratuito**: 20 siti per account (oggi: la radice + 19 scaffali
+  riservati, 14 usati: eu-1…4, na-1…3, as-1…3, sa-1…2, af-1, oc-1) e 20.000 file per
+  sito. Il lavoro si ferma da solo se uno scaffale nuovo non è nostro. Se un giorno
+  servissero più siti, il supporto di Cloudflare alza il limite su richiesta.
 - **Quanto pesa per l'utente** (misurato sull'Italia): la prima ricerca in una zona
   scarica in mediana ~37 KB compressi; ripeterla scarica **0 KB** (i file restano nel
   telefono, cifrati, fino a 200). Il raggio parte da 300 m e si allarga solo se serve.
