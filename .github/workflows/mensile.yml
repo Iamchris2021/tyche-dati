@@ -1,0 +1,98 @@
+# Tyche · i luoghi di Overture di tutto il mondo, rigenerati ogni mese (vedi ../../README.md)
+# Il 26 di ogni mese (Overture esce verso il 20-25), e a mano da «Run workflow».
+#   1. una REGIONE per lavoro, in parallelo: legge da S3, prepara i file, li CONTROLLA e
+#      pubblica i suoi scaffali (tyche-dati-<regione>-<n>). Se i controlli falliscono, quella
+#      regione non pubblica niente: restano online i suoi scaffali del mese prima.
+#   2. la RADICE: riunisce le mappe delle regioni (per quelle fallite riprende la parte
+#      ancora online) e pubblica tyche-dati/v3/mappa.json — l'unico file che l'app legge
+#      per sapere dove andare.
+# GitHub manda una mail al proprietario del progetto se qualcosa fallisce.
+name: Luoghi Overture (mensile)
+
+on:
+  schedule:
+    - cron: "17 5 26 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # per salvare la mappa pubblicata: tiene vivo il progetto (GitHub spegne i lavori programmati dopo 60 giorni senza attività)
+
+concurrency:
+  group: luoghi-overture
+  cancel-in-progress: false
+
+jobs:
+  regione:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false        # un guasto in una regione non ferma le altre
+      matrix:
+        regione: [eu, na, sa, af, oc, as]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Prepara (con i controlli di sanità)
+        run: python prepara.py --regione ${{ matrix.regione }} --out out
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Pubblica gli scaffali della regione
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          for dir in out/${{ matrix.regione }}-*/; do
+            nome="tyche-dati-$(basename "$dir")"
+            # --force: crea un sito Pages classico, non un Workers (l'indirizzo resta <nome>.pages.dev)
+            npx --yes wrangler@4 pages project create "$nome" --production-branch=main --force >/dev/null 2>&1 || true
+            # se il nome era già di qualcun altro Cloudflare dà un indirizzo diverso, e la mappa
+            # punterebbe a un sito non nostro: ci si ferma (29 set 2026 riservati eu-1…5, na-1…4,
+            # sa-1…2, af-1…2, oc-1…2, as-1…4)
+            npx --yes wrangler@4 pages project list | grep -Eq "(^|[^a-z0-9-])$nome\.pages\.dev" \
+              || { echo "::error::$nome.pages.dev non è nostro: non pubblico"; exit 1; }
+            npx --yes wrangler@4 pages deploy "$dir" --project-name="$nome" --branch=main --commit-dirty=true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regione-${{ matrix.regione }}
+          path: out/regione-${{ matrix.regione }}.json
+
+  radice:
+    needs: regione
+    if: always()               # anche se qualche regione è fallita: le sue zone restano quelle del mese prima
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: La mappa degli scaffali
+        run: python radice.py --out out
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Pubblica la radice
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@4 pages project list | grep -Eq "(^|[^a-z0-9-])tyche-dati\.pages\.dev" \
+            || { echo "::error::tyche-dati.pages.dev non è nostro: non pubblico"; exit 1; }
+          npx --yes wrangler@4 pages deploy out/radice --project-name=tyche-dati --branch=main --commit-dirty=true
+      - name: Salva la mappa pubblicata
+        run: |
+          cp out/radice/v3/mappa.json mappa-pubblicata.json
+          git config user.name "tyche-dati"
+          git config user.email "tyche-dati@users.noreply.github.com"
+          git add mappa-pubblicata.json
+          git commit -m "Luoghi Overture: mappa del $(date -u +%Y-%m-%d)" || echo "niente di nuovo"
+          git push

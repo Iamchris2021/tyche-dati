@@ -1,0 +1,20 @@
+{
+  "nota": "Confini dei continenti per i file di Overture (29 set 2026). Letto da prepara.py E dall'app (src/lib/overture.ts): una zona da GRIGLIA gradi appartiene alla regione che contiene il suo CENTRO; la prima che combacia vince. Ogni regione è un sito Cloudflare Pages suo (tyche-dati-<id>), sotto i 20.000 file. Se una regione cresce troppo, la si divide QUI e basta.",
+  "griglia": 2.0,
+  "regioni": [
+    { "id": "eu", "nome": "Europa", "s": 34, "n": 90, "o": -30, "e": 45 },
+    { "id": "na", "nome": "Nord America", "s": 15, "n": 90, "o": -180, "e": -30 },
+    { "id": "sa", "nome": "Sud America", "s": -90, "n": 15, "o": -180, "e": -30 },
+    { "id": "af", "nome": "Africa e Medio Oriente", "s": -90, "n": 34, "o": -30, "e": 60 },
+    { "id": "oc", "nome": "Oceania", "s": -90, "n": -10, "o": 60, "e": 180 },
+    { "id": "as", "nome": "Asia", "s": -90, "n": 90, "o": 45, "e": 180 }
+  ],
+  "campioni": {
+    "eu": [["Catania", 37.5027, 15.0873, 40], ["Milano", 45.4642, 9.19, 100], ["Londra", 51.5074, -0.1278, 60], ["Parigi", 48.8566, 2.3522, 80], ["Berlino", 52.52, 13.405, 40]],
+    "na": [["New York", 40.7128, -74.006, 60], ["Los Angeles", 34.0522, -118.2437, 20], ["Città del Messico", 19.4326, -99.1332, 30]],
+    "sa": [["San Paolo", -23.5505, -46.6333, 40], ["Buenos Aires", -34.6037, -58.3816, 40]],
+    "af": [["Il Cairo", 30.0444, 31.2357, 10], ["Lagos", 6.5244, 3.3792, 5], ["Johannesburg", -26.2041, 28.0473, 5]],
+    "oc": [["Sydney", -33.8688, 151.2093, 20]],
+    "as": [["Tokyo", 35.6762, 139.6503, 20], ["Mumbai", 19.076, 72.8777, 20], ["Bangkok", 13.7563, 100.5018, 20]]
+  }
+}

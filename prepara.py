@@ -1,0 +1,304 @@
+"""
+Tyche · prepara i file dei luoghi di Overture per l'app — formato v3, il MONDO
+------------------------------------------------------------------------------
+Vedi `src/lib/overture.ts` e `README.md` per il perché. Per UNA regione di
+`regioni.json` alla volta (il lavoro mensile le fa in parallelo, e un guasto in
+Asia non ferma l'Europa):
+  1. l'ultima edizione di Overture (catalogo STAC), o quella data;
+  2. legge da S3 SOLO i posti del riquadro della regione; dentro DuckDB li
+     traduce nei tag OSM (`mappa.py`) e nelle FAMIGLIE (`gruppi.json`),
+     scartando i chiusi e i poco sicuri, e li riceve ordinati per famiglia e
+     zona — una zona alla volta, memoria bassa anche per venti milioni di posti;
+  3. scrive le zone in una cartella di appoggio, contando i file di ognuna;
+  4. riempie gli SCAFFALI (`<regione>-1`, `-2`, …: un sito Cloudflare Pages
+     ciascuno, sotto i 20.000 file) in ordine di zona, e scrive in
+     `regione-<id>.json` quali zone stanno in quale scaffale — `radice.py` li
+     riunisce nella mappa che l'app legge;
+  5. CONTROLLA che il risultato sia sano (minimi e città campione): se non lo
+     è esce con errore e NON si pubblica niente per quella regione.
+
+PERCHÉ LE FAMIGLIE E GLI SCAFFALI (29 set 2026): con un file per tag e per zona
+il solo riquadro dell'Italia faceva 17.069 file — il mondo ne avrebbe fatti
+centinaia di migliaia, e Cloudflare Pages ne accetta 20.000 per sito. Con 17
+famiglie i file sono una frazione, e gli scaffali crescono da soli.
+
+FORMATO v3 di una zona (senza perdite — owner: «se abbrevi gli indirizzi e i
+contatti come fai a completarli?»):
+  { v: 3, r: edizione, o: [lat·1e5, lng·1e5],  ← l'angolo della zona
+    t: ["amenity=pharmacy", …],                ← i tag del file
+    c: ["Catania", …],                         ← le città, UNA volta per file
+    p: [[nome, dlat, dlng, tel, via, città, [tag]], …] }
+  Il telefono è intero (solo senza spazi); l'indirizzo si ricompone identico.
+
+Uso:  python prepara.py --regione eu [--release 2026-09-23.1] [--out out]
+      python prepara.py --regione eu --da-file italia.parquet     (prove locali)
+"""
+from __future__ import annotations
+
+import argparse, json, math, os, re, shutil, sys, time, urllib.request
+from collections import defaultdict
+
+QUI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, QUI)
+from mappa import TAX_A_OSM, BASIC_A_OSM, R  # noqa: E402
+
+REG = json.load(open(os.path.join(QUI, "regioni.json")))
+GRU = json.load(open(os.path.join(QUI, "gruppi.json")))
+GRIGLIA = REG["griglia"]      # lo stesso file lo legge l'app
+MAX_PER_FILE = 800            # oltre, la zona si divide in quattro
+PROFONDITA_MAX = 10
+FIDUCIA_MIN = 0.40            # sotto, Overture stesso non è sicuro che il posto esista
+FILE_PER_SCAFFALE = 19000     # Cloudflare Pages ne accetta 20.000 per sito
+# i MINIMI per regione: circa il 40% di quanti posti c'erano nell'edizione 2026-09-23.1 (misurati
+# su tutto il mondo: eu 16,6 M · na 13,8 M · as 10,3 M · sa 4,9 M · af 1,4 M · oc 0,9 M). Sotto,
+# l'edizione è a metà o il formato è cambiato: non si pubblica.
+MIN_POSTI = {"eu": 6_000_000, "na": 5_000_000, "sa": 1_800_000, "af": 500_000, "oc": 350_000, "as": 4_000_000}
+
+
+def gruppo_di(tag: str) -> str:
+    return GRU["per_tag"].get(tag) or GRU["per_chiave"].get(tag.split("=")[0]) or GRU["altro"]
+
+
+def ultima_release() -> str:
+    with urllib.request.urlopen("https://stac.overturemaps.org/catalog.json", timeout=60) as r:
+        cat = json.load(r)
+    if not cat.get("latest"):
+        sys.exit("catalogo STAC senza «latest»: controllare https://stac.overturemaps.org/catalog.json")
+    return cat["latest"]
+
+
+def regione_di_zona(i: int, j: int) -> str | None:
+    lat, lng = (i + 0.5) * GRIGLIA, (j + 0.5) * GRIGLIA
+    for r in REG["regioni"]:
+        if r["s"] <= lat < r["n"] and r["o"] <= lng < r["e"]:
+            return r["id"]
+    return None
+
+
+def telefono(t):
+    t = (t or "").strip()
+    return ("+" if t.startswith("+") else "") + re.sub(r"\D", "", t) if t else ""
+
+
+def leggi(con, regione: dict, release: str, da_file: str | None):
+    """Righe (gruppo, i, j, nome, lat, lng, tel, via, paese, tag), ordinate: lo
+    stesso posto con più tag della stessa famiglia arriva in righe vicine."""
+    tutti_i_tag = {t for v in list(TAX_A_OSM.values()) + list(BASIC_A_OSM.values()) for t in v} | {R}
+    con.execute("CREATE OR REPLACE TABLE mappa(tax VARCHAR, tag VARCHAR)")
+    con.executemany("INSERT INTO mappa VALUES (?, ?)", [(t, tag) for t, tags in TAX_A_OSM.items() for tag in tags])
+    con.execute("CREATE OR REPLACE TABLE mappa_bc(bc VARCHAR, tag VARCHAR)")
+    con.executemany("INSERT INTO mappa_bc VALUES (?, ?)", [(b, tag) for b, tags in BASIC_A_OSM.items() for tag in tags])
+    con.execute("CREATE OR REPLACE TABLE gruppi(tag VARCHAR, gruppo VARCHAR)")
+    con.executemany("INSERT INTO gruppi VALUES (?, ?)", [(t, gruppo_di(t)) for t in tutti_i_tag])
+    o, s, e, n = regione["o"], regione["s"], regione["e"], regione["n"]
+    if da_file:
+        sorgente = f"(SELECT nome, tax, bc, conf, stato, tel, via, paese, lat, lng FROM read_parquet('{da_file}'))"
+    else:
+        sorgente = f"""(SELECT names.primary AS nome, taxonomy.primary AS tax, basic_category AS bc, confidence AS conf,
+                  operating_status AS stato, phones[1] AS tel, addresses[1].freeform AS via, addresses[1].locality AS paese,
+                  ST_Y(geometry) AS lat, ST_X(geometry) AS lng
+           FROM read_parquet('s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*', hive_partitioning=1)
+           WHERE bbox.xmin BETWEEN {o} AND {e} AND bbox.ymin BETWEEN {s} AND {n})"""
+    con.execute(f"""
+        CREATE OR REPLACE TEMP VIEW posti AS
+        SELECT g.gruppo, floor(p.lat / {GRIGLIA})::INT AS i, floor(p.lng / {GRIGLIA})::INT AS j,
+               trim(p.nome) AS nome, p.lat, p.lng, p.tel, p.via, p.paese, t.tag
+        FROM {sorgente} p
+        CROSS JOIN LATERAL (
+            SELECT m.tag FROM mappa m WHERE m.tax = p.tax
+            UNION ALL SELECT '{R}' WHERE p.tax LIKE '%\\_restaurant' ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM mappa m2 WHERE m2.tax = p.tax)
+            UNION ALL SELECT b.tag FROM mappa_bc b WHERE p.tax IS NULL AND b.bc = p.bc
+        ) t
+        JOIN gruppi g ON g.tag = t.tag
+        WHERE p.nome IS NOT NULL AND trim(p.nome) <> ''
+          AND p.conf >= {FIDUCIA_MIN} AND coalesce(p.stato, 'open') <> 'permanently_closed'
+    """)
+    return con.execute("SELECT * FROM posti ORDER BY gruppo, i, j, nome, lat, lng")
+
+
+def confini(nome):
+    radice, *quadri = nome.split("-")
+    i, j = map(int, radice.split("_"))
+    s, o, lato = i * GRIGLIA, j * GRIGLIA, GRIGLIA
+    for q in map(int, quadri):
+        lato /= 2
+        if q in (1, 3): o += lato
+        if q in (2, 3): s += lato
+    return s, o, lato
+
+
+def quadrante(nome, lat, lng):
+    s, o, lato = confini(nome)
+    meta = lato / 2
+    return (1 if lng >= o + meta else 0) + (2 if lat >= s + meta else 0)
+
+
+tag_per_foglia: dict[tuple[str, str], list[str]] = {}  # (cartella della famiglia, foglia) → i suoi tag
+
+
+def scrivi_zona(cartella, nome, posti, release, profondita, foglie):
+    """posti: [nome, lat, lng, tel, via, paese, set(tag)]"""
+    if len(posti) > MAX_PER_FILE and profondita < PROFONDITA_MAX:
+        figli = defaultdict(list)
+        for p in posti:
+            figli[quadrante(nome, p[1], p[2])].append(p)
+        for q, sotto in figli.items():
+            scrivi_zona(cartella, f"{nome}-{q}", sotto, release, profondita + 1, foglie)
+        return
+    s, o, _ = confini(nome)
+    o5 = [round(s * 1e5), round(o * 1e5)]
+    tag = sorted({t for p in posti for t in p[6]})
+    tag_per_foglia[(cartella, nome)] = tag
+    ti = {t: k for k, t in enumerate(tag)}
+    citta, ci, righe = [], {}, []
+    for nome_p, lat, lng, tel, via, paese, tags in posti:
+        paese, via = (paese or "").strip(), (via or "").strip()
+        if paese and paese.lower() in via.lower():
+            paese = ""  # già dentro l'indirizzo: non si ripete
+        c = -1
+        if paese:
+            if paese not in ci:
+                ci[paese] = len(citta)
+                citta.append(paese)
+            c = ci[paese]
+        righe.append([nome_p[:80], round(lat * 1e5) - o5[0], round(lng * 1e5) - o5[1], telefono(tel), via[:80], c, sorted(ti[t] for t in tags)])
+    with open(os.path.join(cartella, f"{nome}.json"), "w") as f:
+        json.dump({"v": 3, "r": release, "o": o5, "t": tag, "c": citta, "p": righe}, f, ensure_ascii=False, separators=(",", ":"))
+    foglie.append(nome)
+
+
+def distanza(a, b, c, d):
+    p = math.radians
+    x = math.sin(p(c - a) / 2) ** 2 + math.cos(p(a)) * math.cos(p(c)) * math.sin(p(d - b) / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(x))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--regione", required=True, choices=[r["id"] for r in REG["regioni"]])
+    ap.add_argument("--release")
+    ap.add_argument("--da-file")
+    ap.add_argument("--out", default=os.path.join(QUI, "out"))
+    a = ap.parse_args()
+    reg = next(r for r in REG["regioni"] if r["id"] == a.regione)
+    release = a.release or ("locale" if a.da_file else ultima_release())
+    import duckdb
+    con = duckdb.connect()
+    con.execute("SET enable_progress_bar=false; INSTALL spatial; LOAD spatial; SET threads=8;")
+    if not a.da_file:
+        con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2'; SET http_timeout=120; SET http_retries=8;")
+    t0 = time.time()
+    appoggio = os.path.join(a.out, f"_appoggio-{a.regione}")
+    shutil.rmtree(appoggio, ignore_errors=True)
+    cur = leggi(con, reg, release, a.da_file)
+
+    campioni = REG["campioni"].get(a.regione, [])
+    farmacie = defaultdict(int)
+    n_posti, con_tel = 0, 0
+    file_per_zona = defaultdict(int)          # (i, j) → quanti file
+    foglie_per = defaultdict(list)            # (gruppo, i, j) → nomi delle foglie
+    stato = {"g": None, "z": None, "buf": {}}
+
+    def chiudi_zona():
+        g, z, buf = stato["g"], stato["z"], stato["buf"]
+        if g is None or z is None or not buf:
+            return
+        cart = os.path.join(appoggio, g)
+        os.makedirs(cart, exist_ok=True)
+        foglie = []
+        scrivi_zona(cart, f"{z[0]}_{z[1]}", list(buf.values()), release, 0, foglie)
+        foglie_per[(g, z[0], z[1])] = foglie
+        file_per_zona[z] += len(foglie)
+
+    while True:
+        blocco = cur.fetchmany(50_000)
+        if not blocco:
+            break
+        for g, i, j, nome, lat, lng, tel, via, paese, tag in blocco:
+            if regione_di_zona(i, j) != a.regione:
+                continue  # il centro della zona sta in un'altra regione: la scrive lei
+            if (g, (i, j)) != (stato["g"], stato["z"]):
+                chiudi_zona()
+                stato.update(g=g, z=(i, j), buf={})
+            chiave = (nome, round(lat, 5), round(lng, 5))
+            p = stato["buf"].get(chiave)
+            if p is None:
+                p = stato["buf"][chiave] = [nome, lat, lng, tel, via, paese, set()]
+                n_posti += 1
+                if tel:
+                    con_tel += 1
+            p[6].add(tag)
+            if tag == "amenity=pharmacy":
+                for nome_c, clat, clng, _m in campioni:
+                    if abs(lat - clat) < 0.05 and abs(lng - clng) < 0.07 and distanza(clat, clng, lat, lng) <= 3000:
+                        farmacie[nome_c] += 1
+    chiudi_zona()
+
+    # GLI SCAFFALI: zone in ordine, ciascuno fino a FILE_PER_SCAFFALE (tenendo posto agli indici)
+    gruppi = sorted({g for g, _i, _j in foglie_per})
+    scaffali, corrente, pieni = [], None, 0
+    for z in sorted(file_per_zona):
+        if corrente is None or pieni + file_per_zona[z] > FILE_PER_SCAFFALE - len(gruppi) - 5:
+            corrente = {"id": f"{a.regione}-{len(scaffali) + 1}", "da": list(z), "a": list(z), "zone": []}
+            scaffali.append(corrente)
+            pieni = 0
+        corrente["zone"].append(z)
+        corrente["a"] = list(z)
+        pieni += file_per_zona[z]
+    n_file = 0
+    for sc in scaffali:
+        base = os.path.join(a.out, sc["id"])
+        shutil.rmtree(base, ignore_errors=True)
+        radice = os.path.join(base, "v3", release)
+        zone = set(sc["zone"])
+        for g in gruppi:
+            foglie = []
+            for (gg, i, j), ff in foglie_per.items():
+                if gg == g and (i, j) in zone:
+                    foglie += ff
+            if not foglie:
+                continue
+            cart = os.path.join(radice, g)
+            os.makedirs(cart, exist_ok=True)
+            for f in foglie:
+                os.replace(os.path.join(appoggio, g, f"{f}.json"), os.path.join(cart, f"{f}.json"))
+            foglie = sorted(foglie)
+            # I MESTIERI RARI: per ognuno, in quali file sta. «coreano» fuori città
+            # scaricava tutti i ristoranti di 25 km per trovarne due; così solo i
+            # file che ne hanno uno. I tag diffusi (in più di metà dei file) non
+            # servono: si prendono tutti comunque.
+            dove = defaultdict(list)
+            for k, f in enumerate(foglie):
+                for t in tag_per_foglia.get((os.path.join(appoggio, g), f), []):
+                    dove[t].append(k)
+            rari = {t: ks for t, ks in dove.items() if len(ks) <= len(foglie) * 0.9}
+            with open(os.path.join(cart, "indice.json"), "w") as fh:
+                json.dump({"v": 3, "r": release, "z": foglie, "k": rari}, fh, separators=(",", ":"))
+            n_file += len(foglie) + 1
+        with open(os.path.join(base, "404.html"), "w") as fh:
+            fh.write("not found")
+        with open(os.path.join(base, "_headers"), "w") as fh:
+            # il percorso ha l'edizione dentro: lo stesso indirizzo non cambia mai → il telefono lo tiene
+            fh.write("/v3/*\n  Cache-Control: public, max-age=31536000, immutable\n  Access-Control-Allow-Origin: *\n")
+        sc["file"] = sum(file_per_zona[z] for z in sc["zone"])
+        del sc["zone"]
+    shutil.rmtree(appoggio, ignore_errors=True)
+    print(f"[{a.regione}] edizione {release} · {n_posti} posti · {n_file} file in {len(scaffali)} scaffali · telefono {con_tel / max(1, n_posti):.0%} · {time.time() - t0:.0f}s")
+
+    problemi = []
+    if not a.da_file and n_posti < MIN_POSTI[a.regione]:
+        problemi.append(f"solo {n_posti} posti (minimo {MIN_POSTI[a.regione]})")
+    if n_posti and con_tel / n_posti < 0.4:
+        problemi.append(f"telefono solo nel {con_tel / n_posti:.0%}")
+    for nome_c, _lat, _lng, minimo in ([] if a.da_file else campioni):
+        if farmacie[nome_c] < minimo:
+            problemi.append(f"{nome_c}: {farmacie[nome_c]} farmacie entro 3 km (minimo {minimo})")
+    if problemi:
+        print(f"[{a.regione}] CONTROLLI NON SUPERATI — non si pubblica niente:\n  " + "\n  ".join(problemi))
+        sys.exit(2)
+    with open(os.path.join(a.out, f"regione-{a.regione}.json"), "w") as fh:
+        json.dump({"v": 3, "regione": a.regione, "r": release, "posti": n_posti, "scaffali": scaffali}, fh, indent=1)
+
+
+if __name__ == "__main__":
+    main()

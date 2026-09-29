@@ -1,0 +1,5 @@
+out/
+_appoggio-*/
+__pycache__/
+*.parquet
+.DS_Store
