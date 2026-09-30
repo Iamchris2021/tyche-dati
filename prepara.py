@@ -53,6 +53,15 @@ PROFONDITA_MAX = 10
 FIDUCIA_MIN = 0.40            # sotto, Overture stesso non è sicuro che il posto esista
 FILE_PER_SCAFFALE = 19000     # Cloudflare Pages ne accetta 20.000 per sito
 AMMUCCHIATI_MIN = 8           # posti diversi sullo STESSO punto: da qui si guarda se il punto è vero (vedi leggi)
+# LA REVISIONE DEI NOSTRI FILE (30 set 2026). I file hanno l'edizione di Overture nel
+# percorso, e i telefoni li tengono PER SEMPRE: un indirizzo non cambia mai contenuto.
+# Ma se ripubblichiamo la STESSA edizione con una correzione nostra (telefoni in
+# +39…, punti di ripiego tolti, categorie nuove…) l'indirizzo resterebbe uguale e i
+# telefoni continuerebbero a leggere la versione vecchia. Perciò il percorso porta anche
+# questo numero: SI ALZA a ogni modifica che cambia il contenuto dei file.
+#   1 = primo mondo (29 set) · 2 = telefoni +39, zone negative, ripiego, pesi negli indici,
+#   categorie nuove (dialisi, cambio valuta, stadi, monumenti, spiagge, ripetizioni…)
+REVISIONE = 2
 # i MINIMI per regione: circa il 40% di quanti posti c'erano nell'edizione 2026-09-23.1 (misurati
 # su tutto il mondo: eu 16,6 M · na 13,8 M · as 10,3 M · sa 4,9 M · af 1,4 M · oc 0,9 M). Sotto,
 # l'edizione è a metà o il formato è cambiato: non si pubblica.
@@ -262,6 +271,8 @@ def main():
     a = ap.parse_args()
     reg = next(r for r in REG["regioni"] if r["id"] == a.regione)
     release = a.release or ("locale" if a.da_file else ultima_release())
+    if not a.da_file:
+        release = f"{release}-r{REVISIONE}"  # per il percorso e per la mappa; S3 si legge con l'edizione nuda
     import duckdb
     con = duckdb.connect()
     con.execute("SET enable_progress_bar=false; INSTALL spatial; LOAD spatial; SET threads=8;")
@@ -270,7 +281,7 @@ def main():
     t0 = time.time()
     appoggio = os.path.join(a.out, f"_appoggio-{a.regione}")
     shutil.rmtree(appoggio, ignore_errors=True)
-    cur = leggi(con, reg, release, a.da_file)
+    cur = leggi(con, reg, release.split("-r")[0], a.da_file)
 
     campioni = REG["campioni"].get(a.regione, [])
     farmacie = defaultdict(int)

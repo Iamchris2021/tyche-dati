@@ -151,7 +151,8 @@
   "amenity=theatre": "svago",
   "studio=audio": "svago",
   "shop=scuba_diving": "svago",
-  "shop=travel_agency": "svago"
+  "shop=travel_agency": "svago",
+  "amenity=bureau_de_change": "soldi"
  },
  "per_chiave": {
   "shop": "negozi",

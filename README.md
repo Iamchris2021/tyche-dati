@@ -54,7 +54,9 @@ Su OpenStreetMap Panda **non esiste**; su Overture sì, con il telefono.
 - **Quanto pesa per l'utente** (misurato sull'Italia): la prima ricerca in una zona
   scarica in mediana ~37 KB compressi; ripeterla scarica **0 KB** (i file restano nel
   telefono, cifrati, fino a 200). Il raggio parte da 300 m e si allarga solo se serve.
-- **Edizione nel percorso**: ogni mese i file hanno un indirizzo nuovo, quindi il
+- **Edizione e revisione nel percorso** (`/v3/2026-09-23.1-r2/…`): ogni mese i file hanno
+  un indirizzo nuovo, e anche ogni correzione nostra alla stessa edizione lo cambia
+  (`REVISIONE` in `prepara.py`, da alzare quando cambia il contenuto dei file). Così il
   telefono può tenerli per sempre senza mai leggere un file vecchio.
 
 Se i controlli di una regione falliscono (edizione a metà, formato cambiato, città

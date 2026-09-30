@@ -204,6 +204,16 @@ TAX_A_OSM: dict[str, list[str]] = {
     "beach_resort": ["leisure=beach_resort"], "park": ["leisure=park"], "playground": ["leisure=playground"], "botanical_garden": ["leisure=garden"],
     "college_university": ["amenity=university"], "school": ["amenity=school"], "elementary_school": ["amenity=school"], "high_school": ["amenity=school"], "middle_school": ["amenity=school"],
     "christian_place_of_worship": ["amenity=place_of_worship"], "roman_catholic_place_of_worship": ["amenity=place_of_worship"], "protestant_place_of_worship": ["amenity=place_of_worship"],
+    # le corrispondenze CHIARE che mancavano (30 set 2026: confronto con le categorie vere di sei
+    # grandi città — Roma, Milano, Parigi, Tokyo, New York, Bangkok): l'app cerca questi tag e
+    # Overture li aveva, ma nessuna riga li traduceva
+    "dialysis_clinic": ["healthcare=dialysis", "amenity=clinic"], "currency_exchange": ["amenity=bureau_de_change"],
+    "stadium_arena": ["leisure=stadium"], "football_stadium": ["leisure=stadium"], "baseball_stadium": ["leisure=stadium"],
+    "basketball_stadium": ["leisure=stadium"], "monument": ["historic=monument"], "sculpture_statue": ["tourism=artwork"],
+    "beach": ["natural=beach"], "rock_climbing_spot": ["leisure=climbing"], "climbing_gym": ["leisure=climbing"],
+    "tutoring_service": ["amenity=prep_school"], "test_preparation": ["amenity=prep_school"],
+    "social_and_human_service": ["amenity=social_facility"], "homeless_shelter": ["amenity=social_facility"],
+    "social_or_community_service": ["amenity=social_facility"],
     "recycling_center": ["amenity=recycling"], "internet_cafe": ["amenity=internet_cafe"], "cultural_center": ["amenity=community_centre"], "community_center": ["amenity=community_centre"],
 }
 
